@@ -1,0 +1,4 @@
+
+利用GEE平台，基于MCD12Q1.061数据集的IGBP分类体系，进行数据下载，得到逐年植被类型数据
+
+Friedl, M., D. Sulla-Menashe. MODIS/Terra+Aqua Land Cover Type Yearly L3 Global 500m SIN Grid V061. 2022, distributed by NASA EOSDIS Land Processes DAAC, https://doi.org/10.5067/MODIS/MCD12Q1.061. 

@@ -1,0 +1,40 @@
+var roi = ee.Geometry.Rectangle([120.85, 30.67, 122.20, 31.88]);
+
+function processMODIS(img) {
+  var qc   = img.select('QC_Day');
+  var mask = qc.bitwiseAnd(3).eq(0);
+  var lst_K = img.select('LST_Day_1km').multiply(0.02).rename('LST_MODIS_K');
+  var lst_C = lst_K.subtract(273.15).rename('LST_MODIS_C');
+  return lst_K.addBands(lst_C)
+              .updateMask(mask)
+              .copyProperties(img, ['system:time_start'])
+              .set('date', img.date().format('YYYY-MM-dd'));
+}
+
+var modis = ee.ImageCollection('MODIS/061/MOD11A1')
+              .filterBounds(roi)
+              .filterDate('2023-01-01', '2023-12-31')
+              .select(['LST_Day_1km','QC_Day'])
+              .map(processMODIS);
+
+print('MODIS 2023年景数:', modis.size());
+
+var allSamples = modis.map(function(img) {
+  return img.sample({
+    region: roi,
+    scale: 1000,
+    geometries: true
+  }).map(function(f) {
+    return f.set('date', img.get('date'));
+  });
+}).flatten();
+
+print('总样本点数:', allSamples.size());
+
+Export.table.toDrive({
+  collection: allSamples,
+  description: 'MODIS_Shanghai_2023',
+  folder: 'LST_Shanghai',
+  fileNamePrefix: 'MODIS_Shanghai_2023',
+  fileFormat: 'CSV'
+});

@@ -1,0 +1,31 @@
+# UHI (Urban Heat Island) Prediction Model - Requirements
+# Core scientific computing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# Geographic spatial processing
+geopandas>=0.14.0
+rasterio>=1.3.0
+shapely>=2.0.0
+fiona>=1.9.0
+
+# Machine learning
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+
+# Model serialization
+joblib>=1.3.0
+
+# Visualization
+matplotlib>=3.7.0
+graphviz>=0.20.1
+
+# Deep learning (if needed)
+tensorflow>=2.13.0
+
+# Note for Windows users:
+# If you encounter installation issues with geopandas, try installing GDAL and Fiona first:
+# pip install GDAL==3.8.0 Fiona==1.9.0
+# pip install geopandas

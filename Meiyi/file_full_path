@@ -1,0 +1,257 @@
+import os
+import glob
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+import rasterio
+import rioxarray as rxr
+import matplotlib.pyplot as plt
+import seaborn as sns
+from rasterio.enums import Resampling
+from shapely.geometry import box
+
+# -------------------------- 1. 基础配置与路径设置 --------------------------
+# 解决中文显示
+plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei"]
+plt.rcParams["axes.unicode_minus"] = False
+plt.rcParams["figure.dpi"] = 300
+plt.rcParams["axes.spines.top"] = False
+plt.rcParams["axes.spines.right"] = False
+
+# 数据根目录 (使用原始字符串处理Windows路径)
+BASE_DIR = r"D:\paper\A1096\code\data"
+
+# 各数据路径
+PATH_BUILDING = os.path.join(BASE_DIR, "building", "xiamen.shp")
+PATH_BOUNDARY = os.path.join(BASE_DIR, "vector", "350200.shp")
+DIR_MOD11A1 = os.path.join(BASE_DIR, "MOD11A1")
+DIR_NDVI = os.path.join(BASE_DIR, "NDVI")
+DIR_MCD12Q1 = os.path.join(BASE_DIR, "MCD12Q1")
+
+# 输出目录
+OUTPUT_DIR = os.path.join(BASE_DIR, "output_figures")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 年份范围
+YEARS = [2020, 2021, 2022, 2023, 2024]
+
+# -------------------------- 2. 辅助函数定义 --------------------------
+def load_and_crop_raster(raster_path, boundary_gdf, resample_factor=None):
+    """
+    读取栅格数据并根据边界裁剪，统一坐标系
+    """
+    try:
+        # 使用rioxarray读取
+        raster = rxr.open_rasterio(raster_path, masked=True).squeeze()
+        
+        # 统一坐标系到边界的坐标系
+        if raster.rio.crs != boundary_gdf.crs:
+            raster = raster.rio.reproject(boundary_gdf.crs)
+        
+        # 裁剪
+        raster_clipped = raster.rio.clip(boundary_gdf.geometry, boundary_gdf.crs, drop=True, all_touched=True)
+        
+        # 重采样（可选）
+        if resample_factor:
+            new_width = int(raster_clipped.rio.width / resample_factor)
+            new_height = int(raster_clipped.rio.height / resample_factor)
+            raster_clipped = raster_clipped.rio.reproject(
+                raster_clipped.rio.crs,
+                shape=(new_height, new_width),
+                resampling=Resampling.bilinear
+            )
+        return raster_clipped
+    except Exception as e:
+        print(f"处理文件 {raster_path} 时出错: {e}")
+        return None
+
+def calculate_zonal_stats(raster, gdf, stats_col_name="mean_val"):
+    """
+    简单的区域统计：计算矢量范围内的栅格均值
+    """
+    # 这里为了简化，我们直接计算整个研究区的均值
+    # 如果需要按地块统计，需要使用rasterstats库
+    values = raster.values.flatten()
+    values = values[~np.isnan(values)]
+    return np.mean(values)
+
+# -------------------------- 3. 加载基础矢量数据 --------------------------
+print("正在加载矢量边界...")
+gdf_boundary = gpd.read_file(PATH_BOUNDARY)
+# 确保边界是单多边形，如果是MultiPolygon就explode
+if gdf_boundary.geometry.type.iloc[0] == 'MultiPolygon':
+    gdf_boundary = gdf_boundary.explode(index_parts=True).reset_index(drop=True)
+
+# 尝试加载建筑数据（如果存在）
+gdf_building = None
+if os.path.exists(PATH_BUILDING):
+    gdf_building = gpd.read_file(PATH_BUILDING)
+    if gdf_building.crs != gdf_boundary.crs:
+        gdf_building = gdf_building.to_crs(gdf_boundary.crs)
+
+# -------------------------- 4. 生成图表1：2024年核心数据空间分布三连图 --------------------------
+print("正在生成2024年空间分布图...")
+
+# 查找2024年的数据文件
+def find_file(year, directory, keyword):
+    # 简单的文件匹配逻辑
+    files = glob.glob(os.path.join(directory, f"*{year}*"))
+    if files:
+        return files[0]
+    return None
+
+# 获取2024年数据
+ndvi_2024_path = find_file(2024, DIR_NDVI, "Sentinel2")
+lst_2024_path = find_file(2024, DIR_MOD11A1, "MOD11A1") # 这里取第一个可用的
+lucc_2024_path = find_file(2024, DIR_MCD12Q1, "MCD12Q1")
+
+# 读取数据
+raster_ndvi = load_and_crop_raster(ndvi_2024_path, gdf_boundary) if ndvi_2024_path else None
+raster_lst = load_and_crop_raster(lst_2024_path, gdf_boundary) if lst_2024_path else None
+raster_lucc = load_and_crop_raster(lucc_2024_path, gdf_boundary) if lucc_2024_path else None
+
+# 绘图
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+
+# 子图1: NDVI
+if raster_ndvi is not None:
+    im1 = raster_ndvi.plot(ax=ax1, cmap="RdYlGn", vmin=0, vmax=1, add_colorbar=False)
+    cbar1 = plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+    cbar1.set_label('NDVI 值')
+    ax1.set_title("(a) 2024年厦门市归一化植被指数 (NDVI)")
+    gdf_boundary.boundary.plot(ax=ax1, color='black', linewidth=0.5)
+
+# 子图2: LST (地表温度)
+if raster_lst is not None:
+    # 假设LST单位是开尔文，转摄氏度 (如果需要的话，根据你的数据实际情况注释掉)
+    # raster_lst = raster_lst - 273.15 
+    im2 = raster_lst.plot(ax=ax2, cmap="OrRd", vmin=20, vmax=40, add_colorbar=False) # 假设范围20-40度
+    cbar2 = plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+    cbar2.set_label('地表温度 (℃)')
+    ax2.set_title("(b) 2024年厦门市白天地表温度 (LST)")
+    gdf_boundary.boundary.plot(ax=ax2, color='black', linewidth=0.5)
+
+# 子图3: 土地覆盖 (MCD12Q1)
+if raster_lucc is not None:
+    # IGBP分类配色简化版
+    igbp_colors = {
+        1: "#006400", 2: "#228B22", 3: "#32CD32", 4: "#90EE90",
+        5: "#9ACD32", 6: "#8B4513", 7: "#DAA520", 8: "#FFD700",
+        9: "#D2B48C", 10: "#FA8072", 11: "#808080", 12: "#FFFFFF",
+        13: "#000080", 14: "#0000CD", 15: "#1E90FF", 16: "#87CEEB", 17: "#F0E68C"
+    }
+    im3 = raster_lucc.plot(ax=ax3, cmap="tab20", add_colorbar=False)
+    # 手动添加图例比较复杂，这里简化处理
+    ax3.set_title("(c) 2024年厦门市土地覆盖类型 (MCD12Q1 IGBP)")
+    gdf_boundary.boundary.plot(ax=ax3, color='black', linewidth=0.5)
+
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "图4-补充 2024年核心数据空间分布图.png"), bbox_inches="tight")
+print(f"图表已保存至: {OUTPUT_DIR}")
+plt.show()
+
+# -------------------------- 5. 生成图表2：2020-2024年NDVI与LST年际变化 --------------------------
+print("正在计算年际变化统计...")
+
+yearly_stats = []
+
+for year in YEARS:
+    print(f"正在处理 {year} 年数据...")
+    ndvi_path = find_file(year, DIR_NDVI, "Sentinel2")
+    lst_path = find_file(year, DIR_MOD11A1, "MOD11A1") # 取每年的第1个文件或者夏季
+    
+    stats = {"年份": year}
+    
+    if ndvi_path:
+        r = load_and_crop_raster(ndvi_path, gdf_boundary)
+        if r is not None:
+            vals = r.values.flatten()
+            vals = vals[~np.isnan(vals)]
+            stats["年均NDVI"] = np.mean(vals)
+    
+    if lst_path:
+        r = load_and_crop_raster(lst_path, gdf_boundary)
+        if r is not None:
+            vals = r.values.flatten()
+            vals = vals[~np.isnan(vals)]
+            # 单位转换 (如果数据是Kelvin)
+            # vals = vals - 273.15
+            stats["年均LST"] = np.mean(vals)
+    
+    yearly_stats.append(stats)
+
+df_stats = pd.DataFrame(yearly_stats)
+
+# 绘制双轴折线图
+if not df_stats.empty and "年均NDVI" in df_stats.columns and "年均LST" in df_stats.columns:
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    
+    color = "#2ca02c"
+    ax1.set_xlabel("年份")
+    ax1.set_ylabel("年均 NDVI", color=color)
+    line1 = ax1.plot(df_stats["年份"], df_stats["年均NDVI"], color=color, marker='o', linestyle='-', linewidth=2, label='NDVI')
+    ax1.tick_params(axis='y', labelcolor=color)
+    ax1.set_ylim(df_stats["年均NDVI"].min()-0.05, df_stats["年均NDVI"].max()+0.05)
+    
+    ax2 = ax1.twinx()
+    color = "#d62728"
+    ax2.set_ylabel("年均地表温度 (℃)", color=color)
+    line2 = ax2.plot(df_stats["年份"], df_stats["年均LST"], color=color, marker='s', linestyle='--', linewidth=2, label='LST')
+    ax2.tick_params(axis='y', labelcolor=color)
+    
+    # 合并图例
+    lines = line1 + line2
+    labels = [l.get_label() for l in lines]
+    ax1.legend(lines, labels, loc=0)
+    
+    plt.title("图4-7 2020-2024年厦门市年均NDVI与LST年际变化趋势")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "图4-7 年际变化趋势图.png"))
+    plt.show()
+
+# -------------------------- 6. 生成图表3：土地覆盖类型 vs LST 箱线图 (对应4.1节) --------------------------
+print("正在生成土地覆盖与LST关联分析图...")
+
+# 这一步需要对两个栅格进行点对点采样
+# 为了保证代码能运行，我们需要两个栅格分辨率完全一致，这里进行重采样对齐
+
+if raster_lst is not None and raster_lucc is not None:
+    print("正在进行栅格对齐与采样...")
+    
+    # 1. 将土地覆盖重采样到LST的网格上
+    lucc_resampled = raster_lucc.rio.reproject_match(raster_lst, Resampling.mode)
+    
+    # 2. 转换为DataFrame
+    df_lst = raster_lst.to_dataframe(name="LST")
+    df_lucc = lucc_resampled.to_dataframe(name="IGBP_Class")
+    
+    # 3. 合并
+    df_sample = pd.concat([df_lst, df_lucc], axis=1).dropna()
+    
+    # 过滤掉无效值（假设0或255是Nodata）
+    df_sample = df_sample[(df_sample["IGBP_Class"] > 0) & (df_sample["IGBP_Class"] < 18)]
+    
+    # 简化IGBP分类为论文中提到的几类：常绿阔叶林、农田、建筑用地、水体等
+    igbp_remap = {
+        1: "常绿阔叶林", 2: "常绿阔叶林", 3: "常绿阔叶林", 4: "林地", 5: "林地",
+        6: "灌丛", 7: "草地", 8: "农田", 9: "农田", 10: "草地",
+        11: "湿地", 12: "建筑用地", 13: "建筑用地", 14: "水体", 15: "水体",
+        16: "裸地", 17: "裸地"
+    }
+    
+    df_sample["土地覆盖类型"] = df_sample["IGBP_Class"].map(igbp_remap)
+    
+    # 绘图
+    plt.figure(figsize=(10, 6))
+    # 为了绘图清晰，只取主要类别
+    main_classes = ["常绿阔叶林", "农田", "建筑用地", "水体", "草地"]
+    df_plot = df_sample[df_sample["土地覆盖类型"].isin(main_classes)]
+    
+    ax = sns.boxplot(x="土地覆盖类型", y="LST", data=df_plot, palette="Set2", showfliers=False)
+    plt.title("图4-8 厦门市不同土地覆盖类型夏季白天地表温度(LST)对比")
+    plt.ylabel("地表温度 (℃)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "图4-8 土地覆盖与LST箱线图.png"))
+    plt.show()
+
+print("所有分析完成！")
